@@ -1,0 +1,1516 @@
+---
+title: "adujsted_VRMs"
+author: "Fiona Francis"
+date: "`r Sys.Date()`"
+output: html_document
+---
+```{r, echo = F}
+# Install required packages 
+list_of_packages <- c("tidyverse", 
+                      "sf", 
+                      "sp", 
+                      "raster", 
+                      "PerformanceAnalytics", 
+                      "terra",
+                      "sdmTMB",
+                      "blockCV")
+new_packages <- list_of_packages[!(list_of_packages %in% installed.packages()[,"Package"])]
+if(length(new_packages)) install.packages(new_packages)
+# install extra package 
+# remotes::install_github("pbs-assess/sdmTMBextra")
+# remotes::install_github("dustinfife/flexplot")
+
+# Load libraries
+library(tidyverse)
+library(sf)
+library(sp)
+library(raster)
+library(PerformanceAnalytics)
+library(terra)
+library(sdmTMB)
+library(sdmTMBextra)
+library(flexplot)
+library(blockCV)
+library(patchwork)
+library(grid)
+library(ggeffects)
+```
+#setup
+```{r setup, include=FALSE}
+
+library(tidyverse)
+library(lubridate)
+library(fishualize)
+```
+
+#read in VRM data and tidied usage data
+```{r, echo =F}
+vrm <- read_csv("VRM.csv")
+
+vrm
+
+#open use dataframe saved from anchorages-exploratory.Rmd
+
+anchor_sum <-readRDS("use.rds")
+
+
+SGI_sum <- anchor_sum %>% filter(main_anchorage %in% c("NANAIMO", "PLUMPER SOUND", "CAPTAIN'S PASS", "COWICHAN BAY", "TRINCOMALI", "HOUSTON PASS", "KULLEET BAY", "LADYSMITH"))
+```
+
+# usage data plots for impacts paper
+```{r, echo = F}
+anchor_sum %>% distinct(anchorage) %>% print(n = Inf)
+
+anchor_sum %>% ungroup() %>% distinct(anchorage)
+
+anchor_sum %>% ungroup() %>% distinct(main_anchorage) %>% print(n = Inf)
+
+#exclude little used, non primary anchorages
+anchor_sum_select <- anchor_sum %>% filter(!main_anchorage %in% c("PORT ALBERNI", "PORT ALICE", "STEWART", "ILSTAD", "ZEBALLOS", "KULTUS COVE", "KITIMAT"))
+
+#exclude X PR anchorages and combine Kitimat into one
+
+anchor_sum_select <- anchor_sum_select %>%
+  filter(!str_detect(anchorage, "XPRINCE")) %>%
+  mutate(anchorage = if_else(str_detect(anchorage, regex("KITIMAT", ignore_case = TRUE)), 
+                               "KITIMAT", 
+                               anchorage))
+
+anchor_sum_select %>% ungroup() %>% distinct(anchorage) %>% print(n = Inf) # this is 127 anchorages. Of these 109 are in the active databases because active database includes royal roads or sandheads
+
+tot_events_year <- anchor_sum_select %>%  dplyr::group_by(arrived_year) %>% 
+  summarize("Total_events" = sum(anchoring_events), "mean_occupancy" = mean(`% of year occupied`), "min_occupancy" = min(`% of year occupied`), "max_occupancy" = max(`% of year occupied`), "sd" = sd(`% of year occupied`))
+
+# add a column with anchroage region and group by that. Regions are Prince Rupert, Vancouver, SGI
+
+anchor_sum_select <-anchor_sum_select %>%
+  mutate(anchorage_region = case_when(
+    main_anchorage == "PRINCE RUPERT" ~ "PRINCE RUPERT",
+    main_anchorage %in% c("ENGLISH BAY", "VANCOUVER HARBOUR") ~ "VANCOUVER",
+    TRUE ~ "SG ISLANDS"
+  ))
+
+
+events_by_region <-anchor_sum_select %>%  dplyr::group_by(anchorage_region, arrived_year) %>% 
+  summarize("Total_events" = sum(anchoring_events), "mean_occupancy" = mean(`% of year occupied`), "min_occupancy" = min(`% of year occupied`), "max_occupancy" = max(`% of year occupied`), "sd" = sd(`% of year occupied`))
+
+
+# figures for impacts paper
+
+tot_events_year
+
+  theme_black<- function (base_size = 16, base_family = ""){
+    theme_minimal() %+replace% 
+        theme(
+              line = element_line(colour = "white", size = 0.5, linetype = 1, 
+                        lineend = "butt"), 
+              rect = element_rect(fill = "white", 
+                        colour = "white", size = 0.5, linetype = 1), 
+              text = element_text(family = base_family, 
+                        face = "plain", colour = "white", size = base_size,
+                        angle = 0, lineheight = 0.9, hjust = 0.5, vjust = 0.5),
+              axis.text=element_text(family = base_family, 
+                        face = "plain", colour = "grey90", size = base_size,
+                        angle = 0, lineheight = 0.9, hjust = 0.5, vjust = 0.5),
+              plot.background = element_rect(colour = 'black', fill = 'black'),
+              plot.title = element_text(size = rel(1.2)),
+              panel.border = element_rect(fill = NA, colour = "white"), 
+              panel.grid.major = element_line(colour = "grey20", size = 0.2), 
+              panel.grid.minor = element_line(colour = "grey5", size = 0.5),
+              strip.background = element_rect(fill = "grey30", colour = "grey30")
+             )
+    }
+  
+tot_events_year %>% ggplot() +
+  geom_point(aes(arrived_year, Total_events), colour = "#016c59", cex = 3, show.legend = F) +
+   scale_x_continuous(name="Year", limits=c(2008, 2021)) +
+  scale_y_continuous(name="Total number of anchoring events", limits=c(2000, 3750) ) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black"))
+
+events_by_region %>% ggplot() +
+  geom_point(aes(arrived_year, Total_events, colour = anchorage_region, cex = mean_occupancy), show.legend = c(color = FALSE, size = TRUE)) +
+  labs(size = "% of year occupied") +
+   scale_x_continuous(name="Year", limits=c(2009, 2021)) +
+  scale_y_continuous(name="Total number of anchoring events", limits=c(0, 3000) ) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black")) +
+facet_grid(~anchorage_region, scales = "free") +
+   theme(
+    legend.position = c(0.2, 0.8),      # inside top-right corner
+    legend.background = element_rect(fill = alpha('white', 0.7)), # semi-transparent bg
+    legend.key = element_rect(fill = "transparent")              # remove key bg
+  )
+
+#total number of anchoring events for these 127 anchorages excluding 2022
+tot_events_year %>% filter(!arrived_year == 2022) %>% summarize(total_events_all = sum(Total_events, na.rm = TRUE)) #38681
+```
+
+# Impacts paper figure 3 (two panel figure of anchoring events over time)
+```{r, echo = F}
+#cleaner code to combine the two panels for FIGURE 3 in paper, updated for revision with correct legends
+
+
+library(ggplot2)
+library(patchwork)
+library(grid)
+
+ylims <- c(0, 3750)
+xlims <- c(2008, 2021)
+
+base_theme <- theme_classic(base_size = 12) +
+  theme(
+    axis.title = element_text(size = 10, face = "bold"),
+    axis.text = element_text(size = 10),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.title = element_text(size = 11, face = "bold"),
+    plot.tag = element_text(size = 13, face = "bold")
+  )
+
+# Panel A: Overall
+p1 <- tot_events_year %>%
+  ggplot(aes(
+    x = arrived_year,
+    y = Total_events,
+    size = mean_occupancy
+  )) +
+  geom_point(colour = "#08306b", alpha = 0.85) +
+
+  scale_size_continuous(
+  name = "Mean % of year occupied",
+  range = c(2, 10),
+  breaks = c(15, 20, 40),
+  labels = c("15%", "20%", "40%")
+) +
+
+  scale_x_continuous(
+    name = "Year",
+    limits = xlims,
+    breaks = 2008:2022,
+    expand = expansion(mult = c(0.05, 0.05))
+  ) +
+
+  scale_y_continuous(
+    name = "Total number of anchoring events",
+    limits = ylims,
+    expand = expansion(mult = c(0.05, 0.05))
+  ) +
+
+  labs(title = "Overall") +
+
+  guides(
+  size = guide_legend(
+    nrow = 1,
+    byrow = TRUE,
+    direction = "horizontal",
+    override.aes = list(
+      colour = "#08306b",
+      alpha = 1
+    )
+  )
+)+
+
+  base_theme +
+
+ theme(
+  legend.position = "bottom",
+  legend.direction = "horizontal",
+  legend.box = "vertical",
+  legend.background = element_blank(),
+  legend.key = element_blank(),
+  legend.box.background = element_blank(),
+  legend.title = element_text(size = 9, face = "bold"),
+  legend.text = element_text(size = 8),
+  legend.key.size = unit(0.6, "lines"),
+  legend.spacing.x = unit(0.4, "lines"),
+  legend.spacing.y = unit(0.15, "lines"),
+  legend.margin = margin(t = 3, r = 2, b = 2, l = 2)
+)
+
+
+# Panel B: By region
+p2 <- events_by_region %>%
+  ggplot(aes(
+    x = arrived_year,
+    y = Total_events,
+    colour = anchorage_region,
+    size = mean_occupancy
+  )) +
+  geom_point(alpha = 0.85) +
+
+  scale_colour_manual(
+    values = c(
+      "#92c5de",
+      "#f4a582",
+      "#ca0020"
+    ),
+    name = "Region",
+    labels = c(
+      "North Coast",
+      "SGI",
+      "Vancouver"
+    )
+  ) +
+
+  scale_size_continuous(
+    name = "Mean % of year occupied",
+    range = c(2, 10),
+    breaks = c(5,20, 60),
+    labels = c("5%", "20%", "60%")
+  ) +
+
+  scale_x_continuous(
+    name = "Year",
+    limits = xlims,
+    breaks = 2008:2022,
+    expand = expansion(mult = c(0.05, 0.05))
+  ) +
+
+  scale_y_continuous(
+    limits = ylims,
+    expand = expansion(mult = c(0.05, 0.05))
+  ) +
+
+  labs(title = "By region") +
+
+  
+  guides(
+  colour = guide_legend(
+    order = 1,
+    nrow = 1,
+    byrow = TRUE,
+    override.aes = list(size = 4, alpha = 1)
+  ),
+  size = guide_legend(
+    order = 2,
+    nrow = 1,
+    direction = "horizontal"
+  )
+) +
+
+  base_theme +
+
+  theme(
+  legend.position = "bottom",
+  legend.direction = "horizontal",
+  legend.box = "vertical",
+  legend.background = element_blank(),
+  legend.key = element_blank(),
+  legend.box.background = element_blank(),
+  legend.title = element_text(size = 9, face = "bold"),
+  legend.text = element_text(size = 8),
+  legend.key.size = unit(0.6, "lines"),
+  legend.spacing.x = unit(0.4, "lines"),
+  legend.spacing.y = unit(0.15, "lines"),
+  legend.margin = margin(t = 3, r = 2, b = 2, l = 2)
+)
+
+
+# Combine panels while retaining independent legends
+combined_plot <- (p1 | p2) +
+  plot_annotation(tag_levels = "A") +
+  plot_layout(
+    widths = c(1, 1),
+    guides = "keep"
+  )
+
+combined_plot
+
+ggsave(
+  filename = "anchoring_figure.png",
+  plot = combined_plot,
+  width = 10,
+  height = 6,
+  dpi = 600
+)
+
+```
+
+# truncate the VRM file to what we need and clean up the column names
+
+```{r, echo = F}
+# rename columns
+
+vrm <- vrm %>% 
+  rename(anchorage = `Anchorage name`,
+         main_anchorage = Region,
+         depth = `Depth (m)`,
+         LOA = `LOA (m)`, 
+         swing = `Swing Radius (m)`,
+         survey_year = LastMultibeamSurveyYear,
+         ruggedness_swing = `%of SwingRadiusDisturbedlessNaturalRuggedness`,
+        ruggedness_200m = `% of 200 m equivalent distubed Less Natural Ruggedness`, 
+        swing_to_50 = `50percent_swingradius`)
+
+
+# filter out columns we want
+cols <- c("anchorage", 
+          "main_anchorage",
+          "Type",
+          "Source",
+          "Latitude", 
+          "Longitude",
+          "depth",
+          "LOA",
+          "swing",
+          "survey_year",
+          "Multibeam_ID",
+          "TotalSwingRadiusArea",
+          "ruggedness_swing",
+          "ruggedness_200m",
+          "vrm_50percent",
+        "swing_to_50")
+```
+
+
+Make anchor events names match between SGI_sum and vrm file
+```{r, echo = F}
+
+SGI_sum <- SGI_sum %>% mutate(anchorage = str_to_title(anchorage)) %>% 
+                              mutate(main_anchorage = str_to_title(main_anchorage))
+
+vrm <-vrm %>% mutate(anchorage = str_to_title(anchorage)) %>% mutate(anchorage = ifelse(anchorage == "Kulleet Bay Anchorage 2 (Ls9)", "Kulleet Bay Anchorage 2",anchorage)) %>%
+  mutate(anchorage = ifelse(anchorage == "Kulleet Bay Anchorage 1 (Ls8)", "Kulleet Bay Anchorage 1",anchorage))
+
+# subset and remove NAs
+vrm_sub <- (vrm[, cols])
+
+vrm_sub
+
+```
+
+# pull out the usage stats we need for both total time in the usage data set but also usage stats up to the multibeam survey date year for different anchorages
+```{r, echo = F}
+# add columns for first year, last year and total years in use
+SGI_sum <-SGI_sum %>% group_by(anchorage) %>% mutate(first_used = min(arrived_year), last_used = max(arrived_year), years_used = last_used-first_used)
+
+# realized we need to combine xcow Bay 1 and 2 because they have the same gps location but will deal with this later after SSI
+
+
+#summarize anchoring events
+
+tot_events <- SGI_sum %>% group_by(anchorage) %>% 
+  summarize(total_events = sum(anchoring_events), total_time = sum(Total_time_at_anchor_hrs), across(c("years_used", "last_used"))) %>% distinct(anchorage, total_events, .keep_all = T)
+
+# summarize anchoring events in time prior to the multibeam survey (which are mostly 2022 except for the surveys listed below)
+# houstons pass = 2018
+# Kullett bay 1 = 2017
+# kuleett bay 2 = 2018
+# cowichan bay = 2021
+# nanaimo 2-6 = 2021
+
+multibeam_year <- vrm_sub %>% dplyr::select(anchorage,survey_year)
+
+multibeam_year <- multibeam_year %>% mutate(survey_year = ifelse(survey_year == "2015/2018", "2018", survey_year))
+
+multibeam_year <-multibeam_year %>% mutate(survey_year = ifelse(survey_year == "2017/2018/2020", "2018", survey_year))
+
+multibeam_year <-multibeam_year %>% mutate(survey_year = ifelse(survey_year == "2022/2018", "2022", survey_year))
+
+SGI_sum <-SGI_sum %>% left_join(multibeam_year, by = join_by(anchorage))
+
+# summarize total hours and total events pre multibeam and for all the years of usage data that we have
+tot_events <- SGI_sum %>% group_by(anchorage) %>% 
+  summarize(total_events = sum(anchoring_events), total_events_premulti = sum(anchoring_events[arrived_year <= survey_year]), total_time = sum(Total_time_at_anchor_hrs), total_time_premulti = sum(Total_time_at_anchor_hrs[arrived_year <= survey_year]), across(c("years_used", "last_used", "survey_year"))) %>% distinct(anchorage, total_events, .keep_all = T)
+
+SGI_sum %>% group_by(anchorage) %>% 
+  summarize(total_event = sum(anchoring_events[arrived_year <= survey_year])) %>% print(n = Inf)
+
+```
+
+merge usage stats with VRM 
+```{r, echo = F}
+
+vrm_sum <-vrm_sub %>% left_join(tot_events, by = join_by(anchorage))
+
+vrm_sum
+
+
+saveRDS(vrm_sum, file = "use_vrm.rds")
+```
+
+exploratory usage plot for SSI
+```{r, echo = F}
+
+#remove Xcow 1 and 2 for now since we need to figure out how to combine those, maybe we won't combine for now
+
+vrm_subset <-vrm_sum %>% filter(!anchorage %in% c("Xcowichan Bay Anchorage 1/2",  "Xcowichan Bay Anchorage 3/4")) %>% mutate(total_events= ifelse(is.na(total_events), 0, total_events)) %>% 
+  mutate(years_used= ifelse(is.na(years_used), 0, years_used))
+
+#plot of use and vrm by anchorage area
+vrm_subset %>% filter(!main_anchorage == "Nanaimo") %>% ggplot() + geom_point(aes(total_events, ruggedness_200m, colour = anchorage), size = 3, show.legend = F) + facet_wrap(~main_anchorage)
+
+vrm_subset %>% filter(!main_anchorage == "Nanaimo") %>% ggplot() + geom_point(aes(total_events, ruggedness_200m), size = 3, show.legend = F)
+
+#Plumper sound
+
+vrm_subset %>% filter(main_anchorage == "Plumper Sound") %>% ggplot() + geom_point(aes(total_events, ruggedness_200m, colour = anchorage), size = 3, show.legend = T)
+
+#Ruggedness by years used
+vrm_subset %>% filter(!main_anchorage == "Nanaimo") %>% ggplot() + geom_point(aes(years_used, ruggedness_200m, colour = anchorage), size = 3, show.legend = F) + facet_wrap(~main_anchorage)
+
+```
+
+
+thinking about what to do with swing radius, year since use for model
+
+```{r, echo = F}
+
+vrm %>% filter(Type == "Anchorage") %>%  mutate_at(vars(ruggedness_200m,swing), as.numeric) %>% ggplot() + 
+  geom_point(aes(swing, ruggedness_200m, colour = main_anchorage), size = 3, show.legend = T) +
+  abline(0,1)
+
+vrm_sum %>% filter(Type == "Anchorage") %>% ggplot() + 
+  geom_point(aes(swing, total_events, colour = main_anchorage), size = 3, show.legend = T)
+```
+
+## making controls zeros
+```{r, echo = F}
+
+vrm_sum %>% print(n = Inf)
+
+#change last used date to zero for controls
+vrm_sum <-vrm_sum %>% mutate(last_used = case_when(Type == "Control" ~ 0, TRUE ~ as.numeric(last_used)))
+
+
+#change years in use to zero for controls
+vrm_sum <-vrm_sum %>% mutate(years_used = case_when(Type == "Control" ~ 0, TRUE ~ as.numeric(years_used)))
+
+
+#change total_events to zero for controls
+vrm_sum <-vrm_sum %>% mutate(total_events = case_when(Type == "Control" ~ 0, TRUE ~ as.numeric(total_events)))
+
+
+#change total_events_premulti to zero for controls
+vrm_sum <-vrm_sum %>% mutate(total_events_premulti = case_when(Type == "Control" ~ 0, TRUE ~ as.numeric(total_events_premulti)))
+
+#change swing_radius to zero for controls
+vrm_sum <-vrm_sum %>% mutate(swing = case_when(Type == "Control" ~ 0, TRUE ~ as.numeric(swing)))
+
+#change total_time to zero for controls
+vrm_sum <-vrm_sum %>% mutate(total_time = case_when(Type == "Control" ~ 0, TRUE ~ as.numeric(total_time)))
+
+#change total_time_premulti to zero for controls
+vrm_sum <-vrm_sum %>% mutate(total_time_premulti = case_when(Type == "Control" ~ 0, TRUE ~ as.numeric(total_time_premulti)))
+
+vrm_sum %>% print(n = Inf)
+
+# rename the survey_year columns to make sense
+vrm_sum <-vrm_sum %>% rename(all_survey_years_forvrm = survey_year.x, survey_year_single = survey_year.y)
+
+
+
+#need to fill in NAs from survey_year_single based on all_survey_years_forvrm (these are currenty NAs because the usage data didnt have controls obvs when we merged it)
+vrm_sum %>% dplyr::select(survey_year_single, all_survey_years_forvrm, last_used) %>% print(n = Inf)
+
+vrm_sum <-vrm_sum %>% mutate(survey_year_single = ifelse(all_survey_years_forvrm == "2015/2018", "2018", all_survey_years_forvrm))
+
+vrm_sum <-vrm_sum %>% mutate(survey_year_single = ifelse(all_survey_years_forvrm == "2017/2018/2020", "2018", survey_year_single))
+
+vrm_sum <-vrm_sum %>% mutate(survey_year_single = ifelse(all_survey_years_forvrm == "2022/2018", "2022", survey_year_single))
+
+vrm_sum %>% dplyr::select(survey_year_single, all_survey_years_forvrm, last_used) %>% print(n = Inf)
+
+# calculate last year used prior to multibeam surveys, using the total number of years for controls (e.g. 2022 years) because not sure what to put atm
+vrm_sum <-vrm_sum %>% mutate(survey_year_single = as.numeric(survey_year_single))
+#vrm_sum <-vrm_sum %>% mutate(all_survey_years_forvrm = as.numeric(all_survey_years_forvrm))
+vrm_sum <- vrm_sum %>% mutate(years_since_use = (survey_year_single-last_used))
+vrm_sum <-vrm_sum %>% mutate(years_since_use = ifelse(years_since_use < 0, 0, years_since_use))
+
+vrm_sum %>% dplyr::select(anchorage,survey_year_single, all_survey_years_forvrm, last_used, years_since_use) %>% print(n = Inf)
+
+```
+
+# removing Naniamo and Cowichan bay from the VRM models as Naniamo is weird substrate and cow bay has so much noise in the multibeam as well as a lot of overlap between new and old anchorage locations making the useage stats hard to line up. Also removing one of the Xladysmith anchorages as it fully overlaps one of the new locations as well but need to add the useage stats from it to the new one
+# note we need to remove Xcowichan 1/2 and 3/4 for now as we didn't calculate use stats because they were werid and combined anchroages
+# also we aren't going to worry about swing radius for now since we don't know them for X anchorages and haven't decided what to do about those yet
+# we will also take out Nanaimo
+```{r, echo = F}
+
+
+#remove nanaimo and cow bay and the Xladysmith one that fully overlaps a new one
+vrm_select <- vrm_sum  %>% filter(!main_anchorage == "Cowichan Bay") %>% filter(!main_anchorage == "Nanaimo")
+
+# assign the new swing radii for ladysmith (ABCDEF to 234567) and plumper (C to 4, D to 5, A to 1, 2, 3)
+
+vrm_select <-vrm_select %>% mutate(swing.modified = swing) %>% 
+  mutate(swing.modified = ifelse(anchorage == "Xladysmith Anchorage 2", 463.3, swing.modified)) %>% 
+  mutate(swing.modified = ifelse(anchorage == "Xladysmith Anchorage 3", 463.3, swing.modified)) %>% 
+  mutate(swing.modified = ifelse(anchorage == "Xladysmith Anchorage 4", 556, swing.modified)) %>% 
+  mutate(swing.modified = ifelse(anchorage == "Xladysmith Anchorage 5", 556, swing.modified)) %>% 
+  mutate(swing.modified = ifelse(anchorage == "Xladysmith Anchorage 6", 556, swing.modified)) %>% 
+  mutate(swing.modified = ifelse(anchorage == "Xladysmith Anchorage 7", 556, swing.modified)) %>% 
+  mutate(swing.modified = ifelse(anchorage == "Xplumper Sound Anchorage 1", 407.7, swing.modified)) %>%
+    mutate(swing.modified = ifelse(anchorage == "Xplumper Sound Anchorage 2", 407.7, swing.modified)) %>%
+    mutate(swing.modified = ifelse(anchorage == "Xplumper Sound Anchorage 3", 407.7, swing.modified)) %>%
+    mutate(swing.modified = ifelse(anchorage == "Xplumper Sound Anchorage 4", 407.7, swing.modified)) %>%
+    mutate(swing.modified = ifelse(anchorage == "Xplumper Sound Anchorage 5", 648.6, swing.modified))
+# add usage from Xladysmith 3 to ladysmith B since it completely overlaps
+# 
+vrm_select %>% filter(anchorage %in% c("Xladysmith Anchorage 3", "Ladysmith Anchorage B")) %>% dplyr::select(anchorage,total_events, total_events_premulti, total_time, total_time_premulti, years_used, years_since_use)
+# 
+vrm_select <-vrm_select %>% mutate(total_events = ifelse(anchorage == "Ladysmith Anchorage B", 51, total_events)) %>%
+                  mutate(total_events_premulti = ifelse(anchorage == "Ladysmith Anchorage B", 51, total_events_premulti)) %>% 
+  mutate(total_time = ifelse(anchorage == "Ladysmith Anchorage B", 12545, total_time)) %>%
+  mutate(total_time_premulti = ifelse(anchorage == "Ladysmith Anchorage B", 12545, total_time_premulti)) %>%
+  mutate(years_used = ifelse(anchorage == "Ladysmith Anchorage B", 7, years_used))
+
+vrm_select %>% filter(anchorage %in% c("Xladysmith Anchorage 3", "Ladysmith Anchorage B")) %>% dplyr::select(anchorage,total_events, total_events_premulti, total_time, total_time_premulti, years_used, years_since_use)
+ 
+
+vrm_select <- vrm_select %>% filter(!anchorage == "Xladysmith Anchorage 3")
+
+
+vrm_select %>% mutate(year_last_used_premulti = abs(survey_year_single-last_used)) %>% dplyr::select(18:24)
+#plot of VRM200 and VRM swing radius to compare
+
+vrm_select %>% filter(Type == "Anchorage") 
+
+#only 27 anchorages have swing radii to plot (not all of these are perfectly measured as the bathymetry didn't extend all the way so used older surveys to fill in gaps)
+vrm_select %>% filter(Type == "Anchorage") %>% mutate_at(vars(ruggedness_swing), as.numeric) %>% ggplot() + geom_point(aes(ruggedness_swing/100, ruggedness_200m/100, colour = main_anchorage, size = swing, alpha = swing), show.legend = T) +
+  geom_abline() +
+  labs( x = "swing radius VRM", y = "200 m radius VRM", size = "swing radius (m)", alpha = "swing radius (m)", colour = "Anchorage area") +
+   theme_classic() 
+
+# 50% of swing radius (removed the trincomali ones where there wasn't enough swing radius)
+vrm_select %>% filter(Type == "Anchorage") %>% .[1:34,] %>% mutate_at(vars(ruggedness_swing), as.numeric) %>% ggplot() + geom_point(aes(ruggedness_swing/100, vrm_50percent/100, colour = main_anchorage), cex = 3, show.legend = T) +
+  geom_abline() +
+  labs( x = "swing radius VRM", y = "50% radius VRM", size = "swing radius (m)", alpha = "swing radius (m)", colour = "Anchorage area") +
+   theme_classic() 
+
+# 50% to 200 m
+vrm_select %>% filter(Type == "Anchorage") %>%  ggplot() + geom_point(aes(vrm_50percent/100,ruggedness_200m/100, colour = main_anchorage), cex = 3, show.legend = T) +
+  geom_abline() +
+  labs( x = "50% radius VRM", y = "200m radius VRM", size = "swing radius (m)", alpha = "swing radius (m)", colour = "Anchorage area") +
+   theme_classic() 
+
+#plot of VRM against swing radius
+vrm_select %>% filter(Type == "Anchorage") %>% mutate_at(vars(ruggedness_swing), as.numeric) %>% ggplot() + geom_point(aes(swing, ruggedness_200m/100, colour = main_anchorage, size = swing, alpha = swing), show.legend = T) 
+
+#plot of VRM and swing including controls and Xanchorages
+vrm_select %>% mutate_at(vars(ruggedness_swing), as.numeric) %>% ggplot() + geom_point(aes(swing, ruggedness_200m/100, colour = main_anchorage, size = swing, alpha = swing), show.legend = T) 
+
+#plot of swing relative to LOA
+vrm_select %>% mutate_at(vars(ruggedness_swing), as.numeric) %>% ggplot() + geom_point(aes(swing,total_time_premulti, colour = main_anchorage, size = swing, alpha = swing), show.legend = T)
+
+#print vrm_select so that I can use for table of anchorages and controls
+
+write.csv(vrm_select, "vrm_select.csv")
+
+vrm_select <-vrm_select %>%
+ mutate(use = case_when(substr(anchorage,1,1)=="X" ~ "used",  TRUE ~ "current"))
+```
+#FIGURE 6 - no labels
+```{r, echo = F}
+p_vrm <- vrm_select %>%
+  filter(Type == "Anchorage") %>%
+  slice(1:34) %>%
+  mutate(ruggedness_swing = as.numeric(ruggedness_swing)) %>%
+  ggplot(aes(x = ruggedness_swing/100,
+             y = vrm_50percent/100,
+             colour = main_anchorage)) +
+
+  geom_point(size = 3, alpha = 0.9) +
+
+  geom_abline(
+    intercept = 0,
+    slope = 1,
+    linetype = "dashed",
+    colour = "grey40",
+    linewidth = 0.8
+  ) +
+
+  labs(
+  x = "VRM within swing radius",
+  y = "VRM within 50% radius",
+  colour = "Anchorage area"
+) +
+  coord_equal() +
+
+  theme_classic(base_size = 12) +
+  scale_colour_brewer(palette = "hcl_1") +
+
+  theme(
+    legend.position = "right",
+    legend.title = element_text(size = 11),
+    legend.text = element_text(size = 10),
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 10)
+  )
+
+ggsave(
+  filename = "50VRM_VRM.png",
+  plot = p_vrm,
+  width = 6,
+  height = 5,
+  dpi = 300
+)
+```
+# fIGURE 6 - LABELS
+```{r}
+library(ggrepel)
+library(viridis)
+
+p_vrm2 <- vrm_select %>%
+  filter(Type == "Anchorage") %>%
+  slice(1:34) %>%
+  mutate(ruggedness_swing = as.numeric(ruggedness_swing)) %>%
+
+  ggplot(aes(
+    x = ruggedness_swing/100,
+    y = vrm_50percent/100,
+    colour = main_anchorage
+  )) +
+
+  geom_point(size = 3.2, alpha = 0.9) +
+
+  # 1:1 comparison line
+  geom_abline(
+    intercept = 0,
+    slope = 1,
+    linetype = "dashed",
+    colour = "grey50",
+    linewidth = 0.8
+  ) +
+
+  # direct labels
+  geom_text_repel(
+    aes(label = main_anchorage),
+    size = 3,
+    show.legend = FALSE,
+    max.overlaps = 50
+  ) +
+
+  scale_colour_viridis_d(option = "D", end = 0.9) +
+
+  coord_equal() +
+
+  labs(
+    x = "VRM within swing radius",
+    y = "VRM within centre 50% of swing radius"
+  ) +
+  annotate("rect",
+         xmin = -Inf, xmax = Inf,
+         ymin = -Inf, ymax = Inf,
+         alpha = 0) +
+
+  theme_classic(base_size = 12) +
+
+  theme(
+    legend.position = "none",
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 10)
+  )
+ggsave(
+  filename = "50VRM_VRM_labels.png",
+  plot = p_vrm2,
+  width = 6,
+  height = 5,
+  dpi = 300
+)
+
+```
+
+# mixed effects model with sdm TmB of anchoring events, loading the correct packages
+```{r, include= F}
+library(glmmTMB)
+library(car)
+library(effects)
+require(DHARMa, quietly = TRUE)
+library(sf)
+library(sdmTMB)
+library(INLA)
+
+```
+
+#scaling and centering predictor variables
+```{r}
+
+
+#scale predictors
+preds <- dplyr::select(vrm_select, 
+                       total_events,
+                       total_events_premulti,
+                       total_time,
+                       total_time_premulti,
+                       years_used,
+                       last_used,
+                       years_since_use,
+                       depth,
+                       swing, 
+                       swing.modified)
+preds_scaled <- as.data.frame(scale(preds, center = T, scale = T))
+names(preds_scaled) <- paste0(names(preds_scaled), "_scaled")
+preds_scaled <- cbind(preds_scaled,
+                      vrm_select)
+
+preds_scaled
+
+preds_scaled <- preds_scaled %>% mutate(rug_200 = ruggedness_200m/100)
+
+
+preds_scaled  %>% filter(!main_anchorage == "Cowichan Bay")%>% ggplot + geom_point(aes(ruggedness_200m, depth, colour = main_anchorage)) +
+  ylim(0,80)
+
+
+# more exploratory plots 
+# hours, vs events(this one would be a good one to show)
+
+preds_scaled %>% ggplot() + geom_point(aes(total_events, total_time, colour = main_anchorage))
+
+# there is a very strong correlation with a tendancy to occasionally have a few anchorages where there are far more events for shorter periods of time
+
+preds_scaled %>% ggplot() + geom_point(aes(total_events_scaled, total_time_scaled))+
+  geom_abline() +
+  labs(x = "scaled total anchoring events", y = "scaled total hours at anchor") +
+    theme_classic() 
+  
+
+# also a weaker correlation between years used and the number of hours that anchors have been occupied on average
+preds_scaled %>% ggplot() + geom_point(aes(years_used_scaled, total_time_scaled))+
+  geom_abline()
+
+
+# plot time since last use (from multibeam survey collection)
+
+preds_scaled %>% ggplot() + geom_point(aes(years_since_use_scaled,total_time_scaled))
+```
+
+
+#Looking at collinearity of predictors to see if we can include both anchor events and anchoring hours
+```{r, echo = F}
+#Before moving forward, let’s make sure that we can actually include each variable in our model and that we don’t have too much collinearity. To do so, we’ll use the car package. Most VIF calculations were not designed for categorical effects and will often yield super high numbers that might make you think your model is crap - the car package is nice because it applies a correction for this! The only issue with car is that it can’t handle a lot of model types (unlike the check_collinearity() function in performance). So to use it, you can create a simplified linear model with all the same fixed effects and no random effects or non-normal distributions (Paul Buerkner says it’s ok to do this, and I would trust him with my life). - from Bayes baes
+#One important thing to note is that if you have more than one predictor in your model, you need to make sure they are not too correlated with one another - if they are, then the model doesn’t know how to partition the effect sizes between them and you’ll likely underestimate their effects. To do this, you can run the model and then use the car package to check the variance inflation factors (VIFs) of the predictors. - from Bayes baes
+#
+preds_scaled
+
+lm(rug_200 ~ total_events_premulti_scaled + total_time_premulti_scaled + depth_scaled + years_used_scaled, data = preds_scaled)
+
+#issues with swing radius and use because of all the control zeros
+car::vif(lm(rug_200 ~  total_time_premulti_scaled + depth_scaled+ swing.modified_scaled + last_used_scaled,
+            data = preds_scaled))
+
+
+# both events and time are above 3 (some people use 3, some people use 5 as a cut off some use 2), a lot of the variation in VRM that they describe is already explained by other variables in the model so we shouldn't include both in the model, I think because we are looking at total disturbance (NOT just drag marks) with VRM that total time at anchor is a much better descriptor than events even though they are correlated
+
+preds_scaled %>% ggplot() + geom_point(aes(total_time_premulti_scaled, total_events_premulti_scaled))
+
+
+preds_scaled %>% ggplot() + geom_point(aes(total_time_premulti, total_events_premulti))
+
+vrm_select %>% filter(total_events_premulti >85) %>%dplyr::select(anchorage, total_events_premulti, total_time_premulti)
+
+vrm_select <-vrm_select %>%
+ mutate(use = case_when(substr(anchorage,1,1)=="X" ~ "used",  TRUE ~ "current"))
+
+```
+
+#making a mesh for the sdmTMB model
+```{r}
+#add in lat and long to data
+ 
+get_crs(preds_scaled, c("Longitude", "Latitude")) #function from sdmTMB to check coordinates crs
+
+
+preds_scaled <- add_utm_columns(preds_scaled, c("Longitude", "Latitude")) # add in x and y columns in UTM
+
+
+# need to make a mesh, required for sdmTMB because it is a spatial package, can turn off when running model though
+
+mesh <- make_mesh(data = preds_scaled, xy_cols = c("X", "Y"), cutoff = 1) #the cutoff is km
+
+plot(mesh)
+
+preds_scaled <- preds_scaled %>% mutate_if(is.character, as.factor)# if you don't turn site into a factor sdmTMB will explode and not run
+
+```
+
+#fitting a sdmtmb model to the VRM 200 m with hours occupied data using a beta regression
+```{r, echo = F}
+
+# sdmTMB model fit with a Beta regression
+
+
+preds_scaled %>% ggplot + geom_point(aes(total_time, ruggedness_200m, colour = main_anchorage))
+
+
+use2 <- sdmTMB(formula = rug_200 ~ total_time_premulti_scaled + depth_scaled +years_since_use_scaled, mesh = mesh, spatial = "on", family = Beta(link = "logit"), data = preds_scaled, control = sdmTMBcontrol(newton_loops = 5))
+
+
+
+# correlation and VIF factor between variables VIF of 3
+# spatial field acts as a latent variable to account for spatial effects that are not accounted for by fixed effects
+
+
+sanity(use2)
+summary(use2)
+
+preds_scaled$resid <- residuals(use2)
+qqnorm(preds_scaled$resid)
+
+qqline(preds_scaled$resid)
+
+visreg::visreg(use2, "total_time_premulti_scaled")
+visreg::visreg(use2, "depth_scaled")
+
+
+
+```
+
+#fitting a sdmtmb model to the VRM 200 m with time data using a beta regression
+
+```{r, echo = F}
+
+# sdmTMB model fit with a Beta regression
+
+vrm_select %>% ggplot + geom_point(aes(total_time, ruggedness_200m, colour = main_anchorage))
+
+vrm_select %>% ggplot + geom_point(aes(last_used, ruggedness_200m, colour = Type))
+# model with events
+
+use_events <- sdmTMB(formula = rug_200 ~ total_events_premulti_scaled + depth_scaled + use, mesh = mesh, spatial = "on", family = Beta(link = "logit"), data = preds_scaled, control = sdmTMBcontrol(newton_loops = 5))
+
+# model with time and years used
+# I don't know if this makes sense to use years used as depending on how recently that is it would affect the number of events since events have been increasing in time
+
+#use_hrs <- sdmTMB(formula = rug_200 ~ total_time_premulti_scaled + depth_scaled + years_used_scaled, mesh = mesh, spatial = "on", family = Beta(link = "logit"), data = preds_scaled, control = sdmTMBcontrol(newton_loops = 5))
+
+use_type <-sdmTMB(formula = rug_200 ~ total_time_premulti_scaled + depth_scaled + Type, mesh = mesh, spatial = "on", family = Beta(link = "logit"), data = preds_scaled, control = sdmTMBcontrol(newton_loops = 5))
+
+use_type2 <-sdmTMB(formula = rug_200 ~ total_time_premulti_scaled + depth_scaled + Type, mesh = mesh, spatial = "off", family = Beta(link = "logit"), data = preds_scaled, control = sdmTMBcontrol(newton_loops = 5))
+
+use_randtype <-sdmTMB(formula = rug_200 ~ total_time_premulti_scaled + depth_scaled + Type + (1|main_anchorage), mesh = mesh, spatial = "off", family = Beta(link = "logit"), data = preds_scaled, control = sdmTMBcontrol(newton_loops = 5))
+
+use_randtype2 <-sdmTMB(formula = rug_200 ~ total_time_premulti_scaled + depth_scaled + Type + (1|main_anchorage), mesh = mesh, spatial = "on", family = Beta(link = "logit"), data = preds_scaled, control = sdmTMBcontrol(newton_loops = 5))
+
+use_use <-sdmTMB(formula = rug_200 ~ total_time_premulti_scaled + depth_scaled + use , mesh = mesh, spatial = "off", family = Beta(link = "logit"), data = preds_scaled, control = sdmTMBcontrol(newton_loops = 5))
+
+use_use2 <-sdmTMB(formula = rug_200 ~ total_time_premulti_scaled + depth_scaled + use , mesh = mesh, spatial = "on", family = Beta(link = "logit"), data = preds_scaled, control = sdmTMBcontrol(newton_loops = 5))
+
+use_randusetype <-sdmTMB(formula = rug_200 ~ total_time_premulti_scaled + depth_scaled + use + Type + (1|main_anchorage), mesh = mesh, spatial = "off", family = Beta(link = "logit"), data = preds_scaled, control = sdmTMBcontrol(newton_loops = 5))
+
+use_randusetype2 <-sdmTMB(formula = rug_200 ~ total_time_premulti_scaled + depth_scaled + use + Type + (1|main_anchorage), mesh = mesh, spatial = "on", family = Beta(link = "logit"), data = preds_scaled, control = sdmTMBcontrol(newton_loops = 5))
+
+use_usetype <-sdmTMB(formula = rug_200 ~ total_time_premulti_scaled + depth_scaled + use + Type, mesh = mesh, spatial = "on", family = Beta(link = "logit"), data = preds_scaled, control = sdmTMBcontrol(newton_loops = 5))
+# correlation and VIF factor between variables VIF of 3
+# spatial field acts as a latent variable to account for spatial effects that are not accounted for by fixed effects
+
+AIC(use_type, use_type2, use_randtype, use_randtype2, use_use, use_use2, use_randusetype, use_randusetype2, use_usetype)
+
+#checking simulation based randomized quantile residuals using DHARMa, KS test is significant but it looks fine and I think it is because there is a big sample size https://github.com/florianhartig/DHARMa/issues/181
+set.seed(123)
+s <- simulate(use_randusetype, nsim = 500, type = "mle-mvn")
+dharma_residuals(s, use_randusetype)
+
+sanity(use_randusetype)
+summary(use_randusetype)
+
+preds_scaled$resid2 <- residuals(use_randusetype)
+qqnorm(preds_scaled$resid2)
+
+qqline(preds_scaled$resid2)
+
+confint(use_randusetype)
+
+# real space value of 1 SD time
+sd(preds_scaled$total_time_premulti, na.rm = TRUE)
+
+
+visreg::visreg(use_randtype, "total_time_premulti_scaled", scale = "response")
+visreg::visreg(use_randusetype, "total_time_premulti_scaled", scale = "response")
+
+#The package ggeffects can be used to plot marginal effects of given predictor variables in sdmTMB models.
+
+#A advantage to this approach over visreg, is that ggeffects calculates marginal effects with the effects package using the parameter covariance matrix. This is nearly instant compared to visreg, which has to calculate conditional effects by calculating predictions with TMB.
+
+#A disadvantage to using ggeffects is that it will only work for regular linear effects in the main model formula. I.e., it will not work with smoothers (internally these are random effects) or breakpoint (breakpt()) effects.
+
+#Another important distinction is that ggeffects::ggeffect() is plotting marginal effects. This means the effects are “marginalized” or “averaged” over the other fixed effects. visreg::visreg() is plotting conditional effects. This means they are conditional on the other predictors being set to certain values. ggeffects::ggpredict() also does conditional effects, but this has not yet been set up in sdmTMB using the CRAN version of ggeffects.
+
+library(ggeffects)
+
+predict_final <- ggeffect(use_randusetype, "total_time_premulti_scaled") %>%  
+  rename(total_time_premulti_scaled = x)
+
+
+predict_final <-as_tibble(predict_final)
+
+#un center and unscale the predictions
+predict_final <-predict_final %>% mutate(total_time_premulti = total_time_premulti_scaled*sd(preds_scaled$total_time_premulti)+
+             mean(preds_scaled$total_time_premulti))
+
+  ggplot(preds_scaled, aes(x = total_time_premulti, y = rug_200)) +
+  #plot the raw data
+  geom_point(aes(colour = use), alpha = 0.4) +
+  #now plot the  model output
+  geom_ribbon(data = predict_final,
+              aes(y = predicted, ymin = conf.low, ymax = conf.high),
+                  fill = "purple", 
+              alpha = 0.3) +
+  geom_line(data = predict_final,
+            aes(y = predicted), colour = "purple") +
+     labs(x = "total hours occupied", y = "VRM (200 m radius)") +
+  theme_classic() 
+```
+
+
+#interpreting model coefficients
+```{r}
+summary(use_randusetype)
+confint(use_randusetype)
+
+
+```
+
+#using ggpredict to generate pprediction of anchoring time vs. VRM in real space (not sure we want to use this one)
+```{r, echo = F}
+
+library(ggeffects)
+#note that specifying n= in square brackets just
+                        #tells ggpredict that you want it to create a 
+                        #larger df, which can help smooth out the plot
+                        #you can also specify a range here instead
+predict_final <- ggpredict(use_randusetype, terms = c("total_time_premulti_scaled[all]")) %>%  
+  rename(total_time_premulti_scaled = x)
+
+predict_final <-as_tibble(predict_final)
+
+#un center and unscale the predictions
+predict_final <-predict_final %>% mutate(total_time_premulti = total_time_premulti_scaled*sd(preds_scaled$total_time_premulti)+
+             mean(preds_scaled$total_time_premulti))
+
+# plot of relationship between total time at anchor and VRM 200 with depth and year since last anchoring held constant
+   ggplot(preds_scaled, aes(x = total_time_premulti, y = rug_200)) +
+  #plot the raw data
+  geom_point(aes(colour = Type), alpha = 0.4) +
+  #now plot the  model output
+  geom_ribbon(data = predict_final,
+              aes(y = predicted, ymin = conf.low, ymax = conf.high),
+                  fill = "blue", 
+              alpha = 0.3) +
+  geom_line(data = predict_final,
+            aes(y = predicted), colour = "blue") +
+     labs(x = "total hours occupied", y = "VRM (200 m radius)") +
+  theme_classic() 
+
+# plot with use
+# 
+  ggplot(preds_scaled, aes(x = total_time_premulti, y = rug_200)) +
+  #plot the raw data
+  geom_point(aes(colour = use), alpha = 0.4) +
+  #now plot the  model output
+  geom_ribbon(data = predict_final,
+              aes(y = predicted, ymin = conf.low, ymax = conf.high),
+                  fill = "purple", 
+              alpha = 0.3) +
+  geom_line(data = predict_final,
+            aes(y = predicted), colour = "purple") +
+     labs(x = "total hours occupied", y = "VRM (200 m radius)") +
+  theme_classic() 
+   
+```
+# Figure 5
+```{r, echo = F}
+
+threshold_df <- predict_final %>%
+  arrange(total_time_premulti) %>%
+  mutate(
+    slope = (predicted - lag(predicted)) /
+            (total_time_premulti - lag(total_time_premulti))
+  )
+
+threshold_df %>%
+  filter(slope == max(slope, na.rm = TRUE))
+
+max_slope <- max(threshold_df$slope, na.rm = TRUE)
+
+threshold_df %>%
+  filter(slope < 0.5 * max_slope) %>%
+  slice(1)
+
+threshold_value <- threshold_df %>%
+  filter(slope == max(slope, na.rm = TRUE)) %>%
+  pull(total_time_premulti)
+
+lowthreshold_value <- threshold_df %>%
+  filter(slope < 0.5 * max_slope) %>%
+  slice(1) %>% pull(total_time_premulti)
+
+
+p <- ggplot(preds_scaled, aes(x = total_time_premulti, y = rug_200)) +
+
+
+  # model confidence ribbon
+  geom_ribbon(data = predict_final,
+              aes(x = total_time_premulti,
+                  ymin = conf.low,
+                  ymax = conf.high),
+              fill = "#7B6FD6",
+              alpha = 0.1,
+              inherit.aes = FALSE) +
+   # raw data
+  geom_point(aes(fill = use),
+             colour = "grey50",
+             alpha = 0.8,
+             size = 1.8,
+             shape = 21) +
+
+  # model prediction line
+  geom_line(data = predict_final,
+            aes(x = total_time_premulti,
+                y = predicted),
+            colour = "#4B3FBF",
+            linewidth = 1.2,
+            inherit.aes = FALSE) +
+    geom_vline(xintercept = threshold_value,
+             linetype = "dashed",
+             colour = "black") +
+     geom_vline(xintercept = lowthreshold_value,
+             linetype = "dotdash",
+             colour = "black") +
+
+  labs(
+    x = "Summed Occupancy Time pre MBES Survey (hours)",
+    y = "Vector Ruggedness Measure (200 m radius)",
+    fill = "Site status"
+  ) +
+
+  scale_fill_manual(
+    values = c(
+      "current" = "#D450A6",   # pink
+      "used" = "#E69F00"       # orange
+    ),
+    labels = c(
+      "current" = "Active (including reference sites)",
+      "used" = "Disused"
+    )
+  ) +
+
+  theme_classic(base_size = 12) +
+
+  theme(
+    legend.position = "top",
+    legend.title = element_text(size = 11),
+    legend.text = element_text(size = 10),
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 10)
+  )
+
+threshold_df
+
+p
+
+ggsave(
+  filename = "rugosity_vs_occupancy.png",
+  plot = p,
+  width = 6,
+  height = 5,
+  dpi = 300
+)
+```
+
+
+### EXTRA STUFF -----
+#figure 5: for a blackbackground
+
+```{r}
+library(ggplot2)
+
+# Dark theme figure
+p_dark <- ggplot(preds_scaled, aes(x = total_time_premulti, y = rug_200)) +
+
+  # raw data points
+  geom_point(aes(),colour = "#00FF00",
+             alpha = 0.8,
+             size = 2) +
+
+  # model confidence ribbon
+  geom_ribbon(data = predict_final,
+              aes(x = total_time_premulti,
+                  ymin = conf.low,
+                  ymax = conf.high),
+              fill = "#FFB347",   # bright yellow-orange
+              alpha = 0.3,
+              inherit.aes = FALSE) +
+
+  # model prediction line
+  geom_line(data = predict_final,
+            aes(x = total_time_premulti,
+                y = predicted),
+            colour = "#00FFFF",  # cyan line
+            linewidth = 1.5,
+            inherit.aes = FALSE) +
+
+  # threshold lines
+  #geom_vline(xintercept = threshold_value,
+           #  linetype = "dashed",
+            # colour = "#FF00FF",  # magenta
+            # linewidth = 1.2) +
+  #geom_vline(xintercept = lowthreshold_value,
+           #  linetype = "dotdash",
+            # colour = "#FFA500",  # orange
+            # linewidth = 1.2) +
+
+  # labels
+  labs(
+    x = "Summed Occupancy Time pre MBES Survey (hours)",
+    y = "Vector Ruggedness Measure (200 m radius)",
+    colour = "Site status"
+  ) +
+
+  # color palette for points
+ # scale_colour_manual(
+    #values = c(
+    #  "current" = "#00FF00",  # bright green
+     # "used" = "#FF4500"      # orange-red
+    #),
+    #labels = c(
+    #  "current" = "Active (including controls)",
+    #  "used" = "Inactive"
+  #  ) +
+
+  # dark background theme
+  theme(
+    panel.background = element_rect(fill = "black"),
+    plot.background = element_rect(fill = "black"),
+    panel.grid = element_blank(),
+    legend.background = element_rect(fill = "black"),
+    legend.key = element_rect(fill = "black"),
+    legend.position = "top",
+    axis.line = element_line(colour = "white", linewidth = 0.8),
+    axis.ticks = element_line(colour = "white"),
+    legend.title = element_text(size = 12, colour = "white"),
+    legend.text = element_text(size = 11, colour = "white"),
+    axis.title = element_text(size = 14, colour = "white"),
+    axis.text = element_text(size = 12, colour = "white")
+  )
+
+ggsave(
+  filename = "rugosity_vs_occupancy_dark.png",
+  plot = p_dark,
+  width = 6,
+  height = 5,
+  dpi = 300,
+  bg = "black"  # ensures background stays black in the saved PNG
+)
+```
+
+
+
+
+messing around with only anchorage data
+```{r, echo = F}
+
+anchor_only <- vrm_select %>% filter(Type == "Anchorage")
+
+preds2 <- dplyr::select(anchor_only, 
+                       total_events,
+                       total_events_premulti,
+                       total_time,
+                       total_time_premulti,
+                       years_used,
+                       last_used,
+                       years_since_use,
+                       depth,
+                       swing, 
+                       swing.modified)
+preds_scaled2 <- as.data.frame(scale(preds2, center = T, scale = T))
+names(preds_scaled2) <- paste0(names(preds_scaled2), "_scaled")
+preds_scaled2 <- cbind(preds_scaled2,
+                      anchor_only)
+preds_scaled2 <- preds_scaled2 %>% mutate(rug_200 = ruggedness_200m/100)
+
+get_crs(preds_scaled2, c("Longitude", "Latitude")) #function from sdmTMB to check coordinates crs
+
+
+preds_scaled2 <- add_utm_columns(preds_scaled2, c("Longitude", "Latitude")) # add in x and y columns in UTM
+
+#collinearity
+car::vif(lm(rug_200 ~  total_time_premulti_scaled + depth_scaled +swing.modified_scaled,
+            data = preds_scaled2))
+
+# need to make a mesh, required for sdmTMB because it is a spatial package, can turn off when running model though
+
+mesh <- make_mesh(data = preds_scaled2, xy_cols = c("X", "Y"), cutoff = 3) #the cutoff is km
+
+plot(mesh)
+
+preds_scaled2 <- preds_scaled2 %>% mutate_if(is.character, as.factor)# 
+
+test <- sdmTMB(formula = rug_200 ~ total_time_premulti_scaled + depth_scaled + swing.modified_scaled, mesh = mesh, spatial = "on", family = Beta(link = "logit"), data = preds_scaled2, control = sdmTMBcontrol(newton_loops = 5))
+
+test3 <- sdmTMB(formula = rug_200 ~ total_time_premulti_scaled + depth_scaled + last_used_scaled, mesh = mesh, spatial = "on", family = Beta(link = "logit"), data = preds_scaled2, control = sdmTMBcontrol(newton_loops = 5))
+
+test4 <- sdmTMB(formula = rug_200 ~ total_time_premulti_scaled + depth_scaled + years_since_use_scaled, mesh = mesh, spatial = "on", family = Beta(link = "logit"), data = preds_scaled2, control = sdmTMBcontrol(newton_loops = 5))
+
+test5 <- sdmTMB(formula = rug_200 ~ total_time_premulti_scaled*years_since_use_scaled + depth_scaled, mesh = mesh, spatial = "on", family = Beta(link = "logit"), data = preds_scaled2, control = sdmTMBcontrol(newton_loops = 5))
+
+test6 <- sdmTMB(formula = rug_200 ~ total_time_premulti_scaled + depth_scaled + swing.modified_scaled, mesh = mesh, spatial = "on", family = Beta(link = "logit"), data = preds_scaled2, control = sdmTMBcontrol(newton_loops = 5))
+
+sanity(test6)
+summary(test6)
+AIC(test, test3, test4, test5)
+
+sanity(test)
+summary(test)
+
+sanity(test4)
+summary(test4)
+
+sanity(test3)
+summary(test3)
+
+summary(test5)
+
+visreg::visreg(test, "swing.modified_scaled", scale = "response")
+visreg::visreg(test2, "last_used_scaled", scale = "response")
+visreg::visreg(test2, "total_time_premulti_scaled", scale = "response")
+
+#preds scaled plots
+
+preds_scaled2 %>% ggplot() + geom_point(aes(years_since_use, rug_200, colour = main_anchorage))
+
+preds_scaled2 %>% ggplot() + geom_point(aes(last_used, total_time_premulti, colour = main_anchorage))
+
+preds_scaled2 %>% ggplot() + geom_point(aes(years_since_use, total_time_premulti, colour = main_anchorage))
+
+preds_scaled2 %>% ggplot() + geom_point(aes(swing.modified, total_time_premulti, colour = main_anchorage))
+
+```
+
+```{echo = F}
+vrm_select <-vrm_select %>%
+ mutate(use = case_when(substr(anchorage,1,1)=="X" ~ "used",  TRUE ~ "current"))
+
+
+ggplot(preds_scaled, aes(x = total_time_premulti, y = rug_200)) +
+  #plot the raw data
+  geom_point(aes(colour = main_anchorage), alpha = 1) +
+  #now plot the  model output
+  geom_ribbon(data = predict_final,
+              aes(y = predicted, ymin = conf.low, ymax = conf.high),
+                  fill = "blue", 
+              alpha = 0.3) +
+  geom_line(data = predict_final,
+            aes(y = predicted), colour = "blue") +
+     labs(x = "total hours occupied", y = "VRM (200 m radius)") +
+  scale_color_brewer(palette="Set3") +
+  theme_classic() 
+
+```
+
+# SAME USAGE FIGURE BUT FOR BLACK BACKGROUND PRESENTATION
+```{r}
+dark_theme <- theme_classic(base_size = 14) +
+  theme(
+    plot.background = element_rect(fill = "black", colour = NA),
+    panel.background = element_rect(fill = "black", colour = NA),
+
+    axis.title = element_text(size = 12, face = "bold", colour = "white"),
+    axis.text = element_text(size = 11, colour = "white"),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+
+    plot.title = element_text(size = 13, face = "bold", colour = "white"),
+    plot.tag = element_text(size = 14, face = "bold", colour = "white"),
+
+    axis.line = element_line(colour = "white"),
+
+    # subtle gridlines for readability
+    panel.grid.major.y = element_line(colour = "grey35", linewidth = 0.35),
+    panel.grid.minor.y = element_blank(),
+    panel.grid.major.x = element_blank(),
+
+    legend.background = element_rect(fill = "black"),
+    legend.key = element_rect(fill = "black"),
+    legend.title = element_text(colour = "white"),
+    legend.text = element_text(colour = "white")
+  )
+p1 <- tot_events_year %>%
+  ggplot() +
+  geom_point(aes(arrived_year, Total_events,
+                 size = mean_occupancy),
+             colour = "#7CFC00",
+             alpha = 0.9) +
+
+  scale_x_continuous(
+    name = "Year",
+    limits = xlims,
+    breaks = 2008:2022,
+    expand = expansion(mult = c(0.05, 0.05))
+  ) +
+
+  scale_y_continuous(
+    name = "Total number of anchoring events",
+    limits = ylims,
+    expand = expansion(mult = c(0.05, 0.05))
+  ) +
+
+  labs(title = "Overall") +
+  dark_theme +
+  theme(legend.position = "none")
+
+p2 <- events_by_region %>%
+  ggplot() +
+  geom_point(aes(arrived_year,
+                 Total_events,
+                 colour = anchorage_region,
+                 size = mean_occupancy),
+             alpha = 0.9) +
+
+  scale_colour_manual(
+    values = c(
+      "#56B4E9",
+      "#E69F00",
+      "#CC79A7"
+    ),
+    name = "Region",
+    labels = c(
+      "North Coast",
+      "SGI",
+      "Vancouver"
+    )
+  ) +
+scale_size_continuous(
+  name = "Mean % of year occupied",
+  range = c(4, 10),
+  breaks = c(5, 20, 40),
+  labels = c("5%", "20%", "40%"),
+  guide = guide_legend(
+    override.aes = list(
+      colour = "white",
+      fill = "white"
+    )
+  )
+) +
+
+  scale_x_continuous(
+    name = "Year",
+    limits = xlims,
+    breaks = 2008:2022,
+    expand = expansion(mult = c(0.05, 0.05))
+  ) +
+
+  scale_y_continuous(
+    limits = ylims,
+    expand = expansion(mult = c(0.05, 0.05))
+  ) +
+
+ guides(
+  colour = guide_legend(nrow = 1, byrow = TRUE),
+  size = guide_legend(
+    nrow = 1,
+    override.aes = list(
+      colour = "white",
+      fill = "white",
+      alpha = 1
+    )
+  )
+) +
+
+  dark_theme +
+  theme(
+    axis.title.y = element_blank(),
+    legend.position = "bottom",
+    legend.box = "vertical",
+    legend.title = element_text(size = 11, face = "bold"),
+    legend.text = element_text(size = 10),
+    legend.key.size = unit(0.8, "lines")
+  )
+
+
+combined_plot <- (p1 | p2) +
+  plot_annotation(tag_levels = "A") +
+  plot_layout(widths = c(1, 1))
+
+combined_plot
+
+ggsave(
+  "anchoring_events_dark.png",
+  combined_plot,
+  width = 12,
+  height = 6,
+  dpi = 300,
+  bg = "black"
+)
+
+
+```
+
+```{r, echo = F}
+tot_events_main <- anchor_sum_select %>%  dplyr::group_by(main_anchorage,arrived_year) %>% 
+  summarize("Total_events" = sum(anchoring_events), "mean_occupancy" = mean(`% of year occupied`), "min_occupancy" = min(`% of year occupied`), "max_occupancy" = max(`% of year occupied`), "sd" = sd(`% of year occupied`))
+
+
+tot_events_main %>% filter(!main_anchorage == "KITIMAT") %>% ggplot() +
+  geom_point(aes(arrived_year, Total_events, colour = main_anchorage, cex = mean_occupancy), show.legend = T) +
+   scale_x_continuous(name="Year", limits=c(2009, 2021)) +
+  scale_y_continuous(name="Total number of anchoring events", limits=c(1, 2000) ) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black")) + facet_wrap(~main_anchorage)
+
+tot_events_main %>% ggplot() +
+  geom_boxplot(aes(main_anchorage,Total_events, colour = main_anchorage), cex = 2, show.legend = F) +
+   scale_y_continuous(name="Total number of annual anchoring events", limits=c(1, 2000)) +
+  scale_x_discrete(name="Anchorage Region") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+#stats on use
+
+anchor_sum_select %>% group_by(anchorage_region) %>%  summarise(n_distinct_levels = n_distinct(anchorage))
+```
+
+# some exploratory plots of the VRMs
+```{r, echo = F}
+
+#% of 200 m buffer
+vrm %>% filter(Type == "Anchorage") %>% ggplot() + geom_point(aes(Region, `% of 200 m equivalent distubed Less Natural Ruggedness`), size = 3, show.legend = F)
+
+#% of 200 m buffer control
+vrm %>% filter(Type == "Control") %>% ggplot() + geom_point(aes(Region, `% of 200 m equivalent distubed Less Natural Ruggedness`), size = 3, show.legend = F)
+
+#control vs. 200m buffer
+
+vrm %>% ggplot() + geom_point(aes(Region, `% of 200 m equivalent distubed Less Natural Ruggedness`, 
+                                  colour = Type))
+
+
+#% of 200 m buffer compared to without accounting for ruggedness
+vrm %>% filter(Type == "Anchorage") %>% ggplot() + geom_point(aes(`% of 200 m buffer disturbed`,`% of 200 m equivalent distubed Less Natural Ruggedness`), size = 3, show.legend = F)
+
+#% of swing radius (minus natural ruggedness)
+vrm %>% filter(Type == "Anchorage") %>%  mutate_at(vars(`%of SwingRadiusDisturbedlessNaturalRuggedness`), as.numeric) %>% ggplot() + geom_point(aes(Region, `%of SwingRadiusDisturbedlessNaturalRuggedness`), size = 3, show.legend = F)
+
+#% of swing radius (minus natural ruggedness) compared to %200
+vrm %>% filter(Type == "Anchorage") %>%  mutate_at(vars(`%of SwingRadiusDisturbedlessNaturalRuggedness`), as.numeric) %>% ggplot() + geom_point(aes(`% of 200 m equivalent distubed Less Natural Ruggedness`, `%of SwingRadiusDisturbedlessNaturalRuggedness`), size = 3, show.legend = F)
+
+hist(vrm$`Depth (m)`)
+
+vrm %>% ggplot() + geom_point(aes(`Depth (m)`, `% of 200 m equivalent distubed Less Natural Ruggedness`), size = 3, show.legend = F)
+```
+
+# look at some of the relationships between variables specifically swing radius and ruggedness
+
+```{r, echo = F}
+
+# look at the ruggedness relative to swing radius
+vrm %>% filter(Type == "Anchorage") %>%  mutate_at(vars(`%of SwingRadiusDisturbedlessNaturalRuggedness`), as.numeric) %>% ggplot() + geom_point(aes(`Swing Radius (m)`, `%of SwingRadiusDisturbedlessNaturalRuggedness`, colour = Region), size = 3, show.legend = T)
+
+vrm %>% filter(Type == "Anchorage") %>%  mutate_at(vars(`% of 200 m equivalent distubed Less Natural Ruggedness`,`%of SwingRadiusDisturbedlessNaturalRuggedness`), as.numeric) %>% ggplot() + geom_point(aes(`%of SwingRadiusDisturbedlessNaturalRuggedness`, `% of 200 m equivalent distubed Less Natural Ruggedness`, colour = Region), size = 3, show.legend = T)
+
+vrm %>% filter(Type == "Anchorage") %>%  mutate_at(vars(`% of 200 m equivalent distubed Less Natural Ruggedness`,), as.numeric) %>% ggplot() + geom_point(aes(`Swing Radius (m)`, `% of 200 m equivalent distubed Less Natural Ruggedness`, colour = Region), size = 3, show.legend = T)
+
+#looking at controls and anchorages for 200 m buffer
+vrm %>% mutate_at(vars(`% of 200 m equivalent distubed Less Natural Ruggedness`), as.numeric) %>% ggplot() + geom_point(aes(Region, `% of 200 m equivalent distubed Less Natural Ruggedness`, colour = Region), size = 3, show.legend = F) + facet_wrap(~Type)
+
+#swing radius vs. depth
+
+vrm %>% filter(Type == "Anchorage") %>% ggplot() + geom_point(aes(`Depth (m)`, `Swing Radius (m)`, colour = Region), size = 3, show.legend = T)
+
+#use and swing
+SGI_sum %>% filter(arrived_year > 2020) %>% ggplot() + geom_point(aes(anchoring_events, swing), size = 3, show.legend = F)
+
+```
+
+
+
