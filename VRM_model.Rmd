@@ -1,0 +1,258 @@
+---
+title: "adujsted_VRMs"
+author: "Fiona Francis"
+date: "`r Sys.Date()`"
+output: html_document
+---
+```{r, echo = F}
+# Install required packages 
+list_of_packages <- c("tidyverse", 
+                      "sf", 
+                      "sp", 
+                      "sdmTMB",
+                      "blockCV")
+new_packages <- list_of_packages[!(list_of_packages %in% installed.packages()[,"Package"])]
+if(length(new_packages)) install.packages(new_packages)
+# install extra package 
+# remotes::install_github("pbs-assess/sdmTMBextra")
+# remotes::install_github("dustinfife/flexplot")
+
+# Load libraries
+library(tidyverse)
+library(sf)
+library(sp)
+library(sdmTMB)
+library(blockCV)
+library(patchwork)
+library(grid)
+library(ggeffects)
+library(lubridate)
+library(glmmTMB)
+library(car)
+library(effects)
+require(DHARMa, quietly = TRUE)
+library(INLA)
+```
+
+#read in VRM and tidied useage data for the sites where we have measured VRM
+```{r, echo =F}
+vrm_select <- readRDS("vrm.rds")
+
+vrm_select
+
+```
+
+
+# mixed effects model with sdmTmB of anchoring events
+
+## scaling and centering predictor variables
+```{r}
+
+#scale predictors
+preds <- dplyr::select(vrm_select, 
+                       total_events,
+                       total_events_premulti,
+                       total_time,
+                       total_time_premulti,
+                       years_used,
+                       last_used,
+                       years_since_use,
+                       depth,
+                       swing, 
+                       swing.modified)
+preds_scaled <- as.data.frame(scale(preds, center = T, scale = T))
+names(preds_scaled) <- paste0(names(preds_scaled), "_scaled")
+preds_scaled <- cbind(preds_scaled,
+                      vrm_select)
+
+preds_scaled
+
+preds_scaled <- preds_scaled %>% mutate(rug_200 = ruggedness_200m/100)
+
+
+  
+```
+
+
+#making a mesh for the sdmTMB model
+```{r}
+#add in lat and long to data
+ 
+get_crs(preds_scaled, c("Longitude", "Latitude")) #function from sdmTMB to check coordinates crs
+
+
+preds_scaled <- add_utm_columns(preds_scaled, c("Longitude", "Latitude")) # add in x and y columns in UTM
+
+
+# need to make a mesh, required for sdmTMB because it is a spatial package, can turn off when running model though
+
+mesh <- make_mesh(data = preds_scaled, xy_cols = c("X", "Y"), cutoff = 1) #the cutoff is km
+
+plot(mesh)
+
+preds_scaled <- preds_scaled %>% mutate_if(is.character, as.factor)# if you don't turn site into a factor sdmTMB will explode and not run
+
+```
+
+#fitting a sdmtmb model to the VRM 200 m using a beta regression, comparing 3 models using AIC (with spatial random field on or off and a with and without a random effect for basin)
+
+```{r, echo = F}
+
+# model with events
+
+
+M1_rand_nospatial <-sdmTMB(formula = rug_200 ~ total_time_premulti_scaled + depth_scaled + use + Type + (1|main_anchorage), mesh = mesh, spatial = "off", family = Beta(link = "logit"), data = preds_scaled, control = sdmTMBcontrol(newton_loops = 5))
+
+M2_rand_spatial <-sdmTMB(formula = rug_200 ~ total_time_premulti_scaled + depth_scaled + use + Type + (1|main_anchorage), mesh = mesh, spatial = "on", family = Beta(link = "logit"), data = preds_scaled, control = sdmTMBcontrol(newton_loops = 5))
+
+M3_norand_spatial <-sdmTMB(formula = rug_200 ~ total_time_premulti_scaled + depth_scaled + use + Type, mesh = mesh, spatial = "on", family = Beta(link = "logit"), data = preds_scaled, control = sdmTMBcontrol(newton_loops = 5))
+
+
+# correlation and VIF factor between variables VIF of 3
+# spatial field acts as a latent variable to account for spatial effects that are not accounted for by fixed effects
+
+AIC(M1_rand_nospatial,M2_rand_spatial, M3_norand_spatial)
+
+#checking simulation based randomized quantile residuals using DHARMa https://github.com/florianhartig/DHARMa/issues/181
+set.seed(123)
+s <- simulate(M1_rand_nospatial, nsim = 500, type = "mle-mvn")
+dharma_residuals(s, M1_rand_nospatial)
+
+sanity(M1_rand_nospatial)
+summary(M1_rand_nospatial)
+
+preds_scaled$resid2 <- residuals(M1_rand_nospatial)
+qqnorm(preds_scaled$resid2)
+
+qqline(preds_scaled$resid2)
+
+confint(M1_rand_nospatial)
+
+# real space value of 1 SD time
+sd(preds_scaled$total_time_premulti, na.rm = TRUE)
+
+
+visreg::visreg(M1_rand_nospatial, "total_time_premulti_scaled", scale = "response")
+visreg::visreg(M1_rand_nospatial, "total_time_premulti_scaled", scale = "response")
+
+#The package ggeffects can be used to plot marginal effects of given predictor variables in sdmTMB models.
+
+#A advantage to this approach over visreg, is that ggeffects calculates marginal effects with the effects package using the parameter covariance matrix. This is nearly instant compared to visreg, which has to calculate conditional effects by calculating predictions with TMB.
+
+#A disadvantage to using ggeffects is that it will only work for regular linear effects in the main model formula. I.e., it will not work with smoothers (internally these are random effects) or breakpoint (breakpt()) effects.
+
+#Another important distinction is that ggeffects::ggeffect() is plotting marginal effects. This means the effects are “marginalized” or “averaged” over the other fixed effects. visreg::visreg() is plotting conditional effects. This means they are conditional on the other predictors being set to certain values. ggeffects::ggpredict() also does conditional effects, but this has not yet been set up in sdmTMB using the CRAN version of ggeffects.
+
+
+predict_final <- ggeffects::ggeffect(M1_rand_nospatial, "total_time_premulti_scaled") %>%  
+  rename(total_time_premulti_scaled = x)
+
+
+predict_final <-as_tibble(predict_final)
+
+#un center and unscale the predictions
+predict_final <-predict_final %>% mutate(total_time_premulti = total_time_premulti_scaled*sd(preds_scaled$total_time_premulti)+
+             mean(preds_scaled$total_time_premulti))
+
+```
+
+
+# model coefficients and confidence intervals
+```{r}
+summary(M1_rand_nospatial)
+confint(M1_rand_nospatial)
+
+```
+
+# plot of model response with raw data points coloured by use (Active/Inactive)
+```{r, echo = F}
+
+threshold_df <- predict_final %>%
+  arrange(total_time_premulti) %>%
+  mutate(
+    slope = (predicted - lag(predicted)) /
+            (total_time_premulti - lag(total_time_premulti))
+  )
+
+threshold_df %>%
+  filter(slope == max(slope, na.rm = TRUE))
+
+max_slope <- max(threshold_df$slope, na.rm = TRUE)
+
+threshold_df %>%
+  filter(slope < 0.5 * max_slope) %>%
+  slice(1)
+
+threshold_value <- threshold_df %>%
+  filter(slope == max(slope, na.rm = TRUE)) %>%
+  pull(total_time_premulti)
+
+lowthreshold_value <- threshold_df %>%
+  filter(slope < 0.5 * max_slope) %>%
+  slice(1) %>% pull(total_time_premulti)
+
+
+p <- ggplot(preds_scaled, aes(x = total_time_premulti, y = rug_200)) +
+
+
+  # model confidence ribbon
+  geom_ribbon(data = predict_final,
+              aes(x = total_time_premulti,
+                  ymin = conf.low,
+                  ymax = conf.high),
+              fill = "#7B6FD6",
+              alpha = 0.1,
+              inherit.aes = FALSE) +
+   # raw data
+  geom_point(aes(fill = use),
+             colour = "grey50",
+             alpha = 0.8,
+             size = 1.8,
+             shape = 21) +
+
+  # model prediction line
+  geom_line(data = predict_final,
+            aes(x = total_time_premulti,
+                y = predicted),
+            colour = "#4B3FBF",
+            linewidth = 1.2,
+            inherit.aes = FALSE) +
+    geom_vline(xintercept = threshold_value,
+             linetype = "dashed",
+             colour = "black") +
+     geom_vline(xintercept = lowthreshold_value,
+             linetype = "dotdash",
+             colour = "black") +
+
+  labs(
+    x = "Summed Occupancy Time pre MBES Survey (hours)",
+    y = "Vector Ruggedness Measure (200 m radius)",
+    fill = "Site status"
+  ) +
+
+  scale_fill_manual(
+    values = c(
+      "current" = "#D450A6",   # pink
+      "used" = "#E69F00"       # orange
+    ),
+    labels = c(
+      "current" = "Active (including reference sites)",
+      "used" = "Disused"
+    )
+  ) +
+
+  theme_classic(base_size = 12) +
+
+  theme(
+    legend.position = "top",
+    legend.title = element_text(size = 11),
+    legend.text = element_text(size = 10),
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 10)
+  )
+
+threshold_df
+
+p
+```
+
